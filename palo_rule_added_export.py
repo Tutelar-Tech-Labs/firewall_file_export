@@ -33,11 +33,11 @@ def parse_duration(duration):
     if duration == "all":
         return None
 
-    m = re.match(r"(\d+)([hdwm])", duration)
+    m = re.match(r"(\d+(?:\.\d+)?)(h|d|w|m|min)", duration)
     if not m:
         raise ValueError("Invalid duration format")
 
-    value, unit = int(m.group(1)), m.group(2)
+    value, unit = float(m.group(1)), m.group(2)
 
     if unit == "h":
         return timedelta(hours=value)
@@ -47,6 +47,8 @@ def parse_duration(duration):
         return timedelta(weeks=value)
     if unit == "m":
         return timedelta(days=value * 30)
+    if unit == "min":
+        return timedelta(minutes=value)
 
 
 # ---------------- CONFIG LOGS ----------------
@@ -112,7 +114,6 @@ def fetch_config_log_add_events(host, api_key, delta):
         if delta and now - t > delta:
             continue
 
-        # Keep earliest add time per rule
         if rule_name not in added_rules or t < added_rules[rule_name]:
             added_rules[rule_name] = t
 
@@ -174,7 +175,7 @@ def main():
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--vsys", default="vsys1")
     parser.add_argument("--duration", default="all",
-                        help="1h, 24h, 7d, 1w, 1m, all")
+                        help="1h, 24h, 7d, 1w, 1m, 30min, all")
     parser.add_argument("--output", default="added_rules")
     parser.add_argument("--format", choices=["csv", "json", "both"], default="both")
     args = parser.parse_args()
@@ -195,7 +196,7 @@ def main():
 
     for rule_name, modified_time in added_rules.items():
         if rule_name not in rule_details:
-            continue  # rule deleted or renamed later
+            continue
 
         row = rule_details[rule_name].copy()
         row["modified_time"] = modified_time.strftime("%Y/%m/%d %H:%M:%S")

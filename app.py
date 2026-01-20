@@ -95,7 +95,7 @@ def download(filename):
 
 if __name__ == "__main__":
     #app.run(host="0.0.0.0", port=5000, debug=True)
-    print("Starting Flask app at port 5000...")
-    serve(app, host="0.0.0.0", port=5000)
+    print("Starting Flask app at port 5010...")
+    serve(app, host="0.0.0.0", port=5010)
 
     
