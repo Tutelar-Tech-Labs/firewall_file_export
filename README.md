@@ -1,6 +1,6 @@
 # Firewall Rule Export Web Application
 
-A web-based tool developed by **Tutelar Tech Labs** that enables administrators to export firewall rule and configuration data in CSV or JSON format with a simple browser interface. The application automates API calls, processes data, and provides downloadable reports.
+A web-based tool developed by that enables administrators to export firewall rule and configuration data in CSV or JSON format with a simple browser interface. The application automates API calls, processes data, and provides downloadable reports.
 
 This project supports both **Windows** (primary deployment) and **Linux** servers, includes automated service deployment methods, GitHub auto-update workflows, and an optional method to expose the app publicly using **ngrok**.
 
@@ -124,7 +124,7 @@ Example `firewall_service.xml`:
 ```xml
 <service>
   <id>TutelarFirewallExport</id>
-  <name>Tutelar Tech Labs - Firewall Export</name>
+  <name>Firewall Export</name>
   <description>Firewall Rule Export Web Application</description>
   <executable>C:\Users\USERNAME\AppData\Local\Programs\Python\Python314\python.exe</executable>
   <arguments>app.py</arguments>
