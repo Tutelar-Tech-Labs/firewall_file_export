@@ -2,9 +2,6 @@ import requests
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
-import csv
-import json
-import argparse
 import re
 import urllib3
 
@@ -13,29 +10,26 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
-# ---------------- API HELPERS ----------------
-
 def api_call(host, api_key, params):
     params["key"] = api_key
     r = requests.get(
         f"https://{host}/api/",
         params=params,
         verify=False,
-        timeout=30
+        timeout=60
     )
     r.raise_for_status()
     return r.text
 
 
-# ---------------- DURATION ----------------
-
 def parse_duration(duration):
     if duration == "all":
         return None
 
-    m = re.match(r"(\d+(?:\.\d+)?)(h|d|w|m|min)", duration)
+    duration = duration.strip().lower()
+    m = re.match(r"(\d+(?:\.\d+)?)(h|d|w|m|min)$", duration)
     if not m:
-        raise ValueError("Invalid duration format")
+        raise ValueError("Invalid duration format. Use 1h, 24h, 7d, 1w, 1m, 30min, all")
 
     value, unit = float(m.group(1)), m.group(2)
 
@@ -51,38 +45,36 @@ def parse_duration(duration):
         return timedelta(minutes=value)
 
 
-# ---------------- CONFIG LOGS ----------------
-
 def extract_rule_name_from_path(path):
-    """
-    Correct extraction:
-    Everything AFTER 'rulebase security rules'
-    """
-    marker = "rulebase security rules"
-    if not path or marker not in path:
+    if not path:
         return None
 
-    rule = path.split(marker, 1)[1].strip()
-    if not rule:
-        return None
+    path = " ".join(path.split())
+    m = re.search(
+        r"(?:pre-rulebase|post-rulebase|rulebase)\s+security\s+rules\s+(.+)$",
+        path
+    )
+    return m.group(1).strip() if m else None
 
-    return rule
 
+def fetch_config_log_events(host, api_key, delta=None, max_poll=120):
+    params = {"type": "log", "log-type": "config"}
 
-def fetch_config_log_add_events(host, api_key, delta):
-    # Start async job
-    xml = api_call(host, api_key, {
-        "type": "log",
-        "log-type": "config"
-    })
+    if delta:
+        now = datetime.now(IST)
+        start = now - delta
+        start_str = start.strftime("%Y/%m/%d %H:%M:%S")
+        params["query"] = f"(receive_time geq '{start_str}')"
+        params["nlogs"] = "5000"
 
+    xml = api_call(host, api_key, params)
     root = ET.fromstring(xml)
+
     job_id = root.findtext(".//job")
     if not job_id:
-        raise RuntimeError("No job ID returned")
+        raise RuntimeError("No job ID returned from config log API")
 
-    # Poll
-    while True:
+    for _ in range(max_poll):
         time.sleep(2)
         xml = api_call(host, api_key, {
             "type": "log",
@@ -90,37 +82,51 @@ def fetch_config_log_add_events(host, api_key, delta):
             "job-id": job_id
         })
         root = ET.fromstring(xml)
+
         if root.findtext(".//status") == "FIN":
-            break
+            return root.findall(".//entry")
 
+    raise RuntimeError("Timeout while waiting for config log job")
+
+
+def fetch_config_log_added_rules(host, api_key, delta):
+    entries = fetch_config_log_events(host, api_key, delta=delta)
     now = datetime.now(IST)
-    added_rules = {}
 
-    for e in root.findall(".//entry"):
-        path = e.findtext("path")
-        time_raw = e.findtext("time_generated")
+    rules = {}
 
-        rule_name = extract_rule_name_from_path(path)
-        if not rule_name:
+    for e in entries:
+        rule = extract_rule_name_from_path(e.findtext("path"))
+        if not rule:
+            continue
+
+        t_raw = e.findtext("time_generated")
+        if not t_raw:
             continue
 
         try:
-            t = datetime.strptime(
-                time_raw, "%Y/%m/%d %H:%M:%S"
-            ).replace(tzinfo=IST)
+            t = datetime.strptime(t_raw, "%Y/%m/%d %H:%M:%S").replace(tzinfo=IST)
         except Exception:
             continue
 
-        if delta and now - t > delta:
+        if delta and (now - t > delta):
             continue
 
-        if rule_name not in added_rules or t < added_rules[rule_name]:
-            added_rules[rule_name] = t
+        if rule not in rules or t < rules[rule]:
+            rules[rule] = t
 
-    return added_rules
+    return rules
 
 
-# ---------------- RULE DETAILS ----------------
+def members(e, tag):
+    vals = [m.text for m in e.findall(f"./{tag}/member") if m.text]
+    return ", ".join(vals) if vals else "any"
+
+
+def text(e, tag, default=""):
+    x = e.find(tag)
+    return x.text.strip() if x is not None and x.text else default
+
 
 def get_security_rules(host, api_key, vsys):
     xml = api_call(host, api_key, {
@@ -138,6 +144,8 @@ def get_security_rules(host, api_key, vsys):
 
     for e in root.findall(".//entry"):
         name = e.get("name")
+        if not name:
+            continue
 
         rules[name] = {
             "name": name,
@@ -147,78 +155,7 @@ def get_security_rules(host, api_key, vsys):
             "destination": members(e, "destination"),
             "application": members(e, "application"),
             "service": members(e, "service"),
-            "action": text(e, "action"),
-            "log_start": text(e, "log-start", "no"),
-            "log_end": text(e, "log-end", "yes"),
+            "action": text(e, "action", "N/A"),
         }
 
     return rules
-
-
-def members(e, tag):
-    vals = [m.text for m in e.findall(f".//{tag}/member") if m.text]
-    return ", ".join(vals) if vals else "any"
-
-
-def text(e, tag, default=""):
-    x = e.find(tag)
-    return x.text if x is not None and x.text else default
-
-
-# ---------------- MAIN ----------------
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Export firewall rules added within a duration (with full details)"
-    )
-    parser.add_argument("--host", required=True)
-    parser.add_argument("--api-key", required=True)
-    parser.add_argument("--vsys", default="vsys1")
-    parser.add_argument("--duration", default="all",
-                        help="1h, 24h, 7d, 1w, 1m, 30min, all")
-    parser.add_argument("--output", default="added_rules")
-    parser.add_argument("--format", choices=["csv", "json", "both"], default="both")
-    args = parser.parse_args()
-
-    delta = parse_duration(args.duration)
-
-    print("Fetching config log add events...")
-    added_rules = fetch_config_log_add_events(
-        args.host, args.api_key, delta
-    )
-
-    print("Fetching security rule details...")
-    rule_details = get_security_rules(
-        args.host, args.api_key, args.vsys
-    )
-
-    final = []
-
-    for rule_name, modified_time in added_rules.items():
-        if rule_name not in rule_details:
-            continue
-
-        row = rule_details[rule_name].copy()
-        row["modified_time"] = modified_time.strftime("%Y/%m/%d %H:%M:%S")
-        final.append(row)
-
-    print("Final rules exported:", len(final))
-
-    ts = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
-    base = f"{args.output}_{args.duration}_{ts}"
-
-    if args.format in ("csv", "both") and final:
-        with open(base + ".csv", "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, final[0].keys())
-            writer.writeheader()
-            writer.writerows(final)
-
-    if args.format in ("json", "both"):
-        with open(base + ".json", "w", encoding="utf-8") as f:
-            json.dump(final, f, indent=2)
-
-    print("Export complete.")
-
-
-if __name__ == "__main__":
-    main()
